@@ -1,0 +1,111 @@
+import groovy.util.slurpersupport.GPathResult
+
+apply plugin: 'java'
+apply plugin: 'groovy'
+apply plugin: 'idea'
+apply plugin: 'jdepend'
+
+group 'jdepend-sample'
+version '1.0-SNAPSHOT'
+description = 'Sample jDepend app'
+
+def langLevel = '1.8'
+sourceCompatibility = langLevel
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    compile 'org.codehaus.groovy:groovy-all:2.4.5'
+//	compile 'org.codehaus.groovy.modules.http-builder:http-builder:0.7'
+//	compile 'org.slf4j:slf4j-api:1.7.6'
+//	compile 'ch.qos.logback:logback-classic:1.1.2'
+//	compile 'joda-time:joda-time:2.4'
+
+    testCompile 'org.spockframework:spock-core:0.7-groovy-2.0', {
+        exclude module: 'groovy-all'
+    }
+    // allows mocking of classes (in addition to interfaces)
+    testRuntime 'cglib:cglib-nodep:3.1'
+    // allows mocking of classes without default constructor (together with CGLIB)
+    testRuntime 'org.objenesis:objenesis:1.2'
+}
+
+test {
+    exclude '**/*IntegrationTest.*'
+    exclude '**/*FeatureTest.*'
+}
+
+task integrationTest(dependsOn: jar, type: Test) {
+    include '**/*IntegrationTest.*'
+}
+
+task featureTest(dependsOn: jar, type: Test) {
+    include '**/*FeatureTest.*'
+}
+
+task allTests(dependsOn: inOrder(test, integrationTest, featureTest))
+
+tasks.withType(Test) {
+    maxParallelForks = 4
+    testLogging {
+        events "passed", "skipped", "failed"
+    }
+}
+
+def inOrder(Task... dependencies) {
+    dependencies.toList().collate(2, 1, false).each { first, second ->
+        second.mustRunAfter(first)
+    }
+}
+
+idea {
+    project {
+        jdkName = langLevel
+        languageLevel = langLevel
+//		ipr {
+//			withXml { provider ->
+//				def node = provider.asNode()
+//				// configure git support for the project in idea
+//				node.component.find { it.'@name' == 'VcsDirectoryMappings' }?.mapping[0].'@vcs' = 'Git'
+//			}
+//		}
+    }
+}
+
+jdepend {
+	toolVersion = '2.9.1'
+	sourceSets = [sourceSets.main]
+	ignoreFailures = false
+}
+
+jdependMain {
+	reports {
+		xml.enabled true
+		text.enabled false
+	}
+}
+
+jdependMain.doLast {
+	File file = new File(jdepend.reportsDir, "main.xml");
+	assert file.exists() && file.isFile(), "File '$file' must exist"
+
+	GPathResult slurpedFile = new XmlSlurper().parse(file)
+	def numberOfCycles = slurpedFile.Cycles.Package.size()
+	assert numberOfCycles == 0, """We have detected $numberOfCycles cycles. Checkout report file: $file."""
+
+	boolean hasCoreToInfraDependency = slurpedFile.Packages.Package[0].DependsUpon.Package[0].text() == 'infra'
+	assert hasCoreToInfraDependency == false, """We have detected dependency from CORE to INFRA. Checkout report file: $file."""
+}
+
+task jdependReport(dependsOn: jdependMain, group: 'verification', description: 'Generates a HTML report after executing jdepend checks.') << {
+	ant.xslt(
+			in: "$reporting.baseDir/jdepend/main.xml",
+			style: "$rootDir/conf/jdepend/jdepend-report.xslt",
+			out:"$reporting.baseDir/jdepend/main.html")
+}
+
+check {
+	dependsOn += ['jdependReport']
+}
